@@ -7,6 +7,7 @@ Fastify-based URL shortener powered by Prisma and SQLite. It offers endpoints to
 - Node.js 20+
 - npm 10+
 - Prisma CLI (`npx prisma …` works after `npm install`)
+- PostgreSQL 15+ (or compatible managed service)
 
 ## Setup
 
@@ -19,10 +20,12 @@ Fastify-based URL shortener powered by Prisma and SQLite. It offers endpoints to
 2. Configure environment variables in `.env` (an example file is provided):
 
    ```
-   DATABASE_URL="file:./dev.db"
+   DATABASE_URL="postgresql://postgres:postgres@localhost:5432/encurtador?schema=public"
    PORT=3000
    BASE_URL=http://localhost:3000
    ```
+
+   The example assumes a local PostgreSQL instance with database `encurtador` and user/password `postgres`.
 
 3. Generate the Prisma client and apply migrations:
 
@@ -44,6 +47,28 @@ Key endpoints:
 - `GET /:slug` – redirects to the original URL
 - `GET /links/:slug` – returns stats (click count, creation date)
 
+### Curl examples
+
+Create a link with a custom slug:
+
+```bash
+curl -X POST http://localhost:3000/links \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/article","slug":"my-article"}'
+```
+
+Follow the redirect (use `-I` to inspect headers without following):
+
+```bash
+curl -I http://localhost:3000/my-article
+```
+
+Fetch statistics for an existing slug:
+
+```bash
+curl http://localhost:3000/links/my-article
+```
+
 ## Tests
 
 Route tests rely on Node’s native test runner:
@@ -51,6 +76,10 @@ Route tests rely on Node’s native test runner:
 ```bash
 npm test
 ```
+
+Make sure a PostgreSQL instance is running and that the database referenced by `DATABASE_URL`
+(default: `encurtador`) exists. You can point tests to a different database or schema by setting
+`TEST_DATABASE_URL`.
 
 ## Docker
 
@@ -60,7 +89,13 @@ The repo ships with a Docker Compose stack that runs two app instances behind Ng
 docker compose up --build
 ```
 
-The service will be reachable at `http://localhost:8080`.
+The stack now includes PostgreSQL; the service will be reachable at `http://localhost:8080`.
+
+To start only the database for local development:
+
+```bash
+docker compose up -d postgres
+```
 
 ## Gatling (load testing)
 

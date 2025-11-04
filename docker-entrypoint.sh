@@ -2,8 +2,9 @@
 set -e
 
 # Ensure the database schema is up to date before starting the server.
-mkdir -p /app/data
-
-npx prisma migrate deploy
+until npx prisma migrate deploy; do
+  echo "Waiting for database to become available..."
+  sleep 3
+done
 
 exec node dist/server.js

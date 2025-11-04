@@ -4,12 +4,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
-import type { PrismaClient } from '@prisma/client';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { PrismaClient } from '@prisma/client';
 
-const testDbFilename = 'test.db';
-const testDbPath = resolve('prisma', testDbFilename);
+const DEFAULT_TEST_DATABASE_URL =
+  'postgresql://postgres:postgres@localhost:5432/encurtador?schema=linkstest';
+const originalDatabaseUrl = process.env.DATABASE_URL;
 
 let prisma: PrismaClient;
 let linkRoutes: (app: FastifyInstance) => Promise<void>;
@@ -21,31 +20,55 @@ async function createApp() {
   return app;
 }
 
+async function ensureTestSchema(connectionString: string) {
+  const url = new URL(connectionString);
+  const dbName = url.pathname.replace(/^\//, '');
+  if (!dbName) {
+    throw new Error('DATABASE_URL must include a database name');
+  }
+  const schema = url.searchParams.get('schema') ?? 'public';
+
+  const adminUrl = new URL(connectionString);
+  adminUrl.searchParams.delete('schema');
+
+  const adminClient = new PrismaClient({ datasources: { db: { url: adminUrl.toString() } } });
+  try {
+    await adminClient.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+  } catch (err) {
+    throw new Error(
+      `Não foi possível preparar o schema de testes "${schema}" no banco "${dbName}". ` +
+        `Crie o banco manualmente (por exemplo: CREATE DATABASE "${dbName}";) e rode novamente.\n` +
+        `Erro original: ${(err as Error).message}`
+    );
+  } finally {
+    await adminClient.$disconnect();
+  }
+}
+
 test.describe('linkRoutes', () => {
   test.before(async () => {
     process.env.NODE_ENV = 'test';
     process.env.BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
-    process.env.DATABASE_URL = `file:./${testDbFilename}`;
-
-    if (existsSync(testDbPath)) {
-      rmSync(testDbPath, { force: true });
-    }
-    writeFileSync(testDbPath, '');
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? DEFAULT_TEST_DATABASE_URL;
+    await ensureTestSchema(process.env.DATABASE_URL);
 
     const prismaModule = await import('../src/lib/prisma.js');
     prisma = prismaModule.prisma;
 
-    await prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "Link";');
+    await prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "Link" CASCADE;');
     await prisma.$executeRawUnsafe(`
       CREATE TABLE "Link" (
-        "id" TEXT NOT NULL PRIMARY KEY,
+        "id" TEXT NOT NULL,
         "slug" TEXT NOT NULL,
         "url" TEXT NOT NULL,
-        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        "clicks" INTEGER NOT NULL DEFAULT 0
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "clicks" INTEGER NOT NULL DEFAULT 0,
+        CONSTRAINT "Link_pkey" PRIMARY KEY ("id")
       );
     `);
-    await prisma.$executeRawUnsafe('CREATE UNIQUE INDEX "Link_slug_key" ON "Link"("slug");');
+    await prisma.$executeRawUnsafe(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "Link_slug_key" ON "Link"("slug");'
+    );
 
     const routesModule = await import('../src/routes/links.js');
     linkRoutes = routesModule.linkRoutes;
@@ -56,9 +79,12 @@ test.describe('linkRoutes', () => {
   });
 
   test.after(async () => {
+    await prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "Link" CASCADE;');
     await prisma.$disconnect();
-    if (existsSync(testDbPath)) {
-      rmSync(testDbPath, { force: true });
+    if (originalDatabaseUrl) {
+      process.env.DATABASE_URL = originalDatabaseUrl;
+    } else {
+      delete process.env.DATABASE_URL;
     }
   });
 
